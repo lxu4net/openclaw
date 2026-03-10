@@ -90,6 +90,14 @@ async function fsMkdtemp(): Promise<string> {
   return fsPromises.mkdtemp(path.join(os.tmpdir(), "openclaw-feishu-bot-"));
 }
 
+function restoreEnvVar(name: "HOME" | "OPENCLAW_STATE_DIR", previousValue: string | undefined) {
+  if (previousValue == null) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = previousValue;
+}
+
 describe("buildFeishuAgentBody", () => {
   it("builds message id, speaker, quoted content, mentions, and permission notice in order", () => {
     const body = buildFeishuAgentBody({
@@ -1924,8 +1932,8 @@ describe("handleFeishuMessage command authorization", () => {
         }),
       );
     } finally {
-      process.env.HOME = previousHome;
-      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      restoreEnvVar("HOME", previousHome);
+      restoreEnvVar("OPENCLAW_STATE_DIR", previousStateDir);
       __testing.resetFeishuThreadBindingsForTests();
     }
   });
