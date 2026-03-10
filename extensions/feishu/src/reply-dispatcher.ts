@@ -375,7 +375,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           }
 
           if (streaming?.isActive()) {
-            seedStreamingFromThreadBuffer();
+            if (threadReplyMode && useCard) {
+              bufferedThreadText = "";
+            } else {
+              seedStreamingFromThreadBuffer();
+            }
             if (info?.kind === "block") {
               // Some runtimes emit block payloads without onPartial/final callbacks.
               // Mirror block text into streamText so onIdle close still sends content.
