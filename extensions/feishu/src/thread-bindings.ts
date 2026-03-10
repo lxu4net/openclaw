@@ -25,6 +25,9 @@ const DEFAULT_THREAD_BINDING_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_THREAD_BINDING_MAX_AGE_MS = 0;
 const THREAD_BINDINGS_SWEEP_INTERVAL_MS = 60_000;
 const STORE_VERSION = 1;
+const FEISHU_PERSIST_QUEUE_BY_ACCOUNT_KEY = Symbol.for(
+  "openclaw.feishuThreadBindingPersistQueueByAccount",
+);
 
 type FeishuBindingTargetKind = "subagent" | "acp";
 
@@ -77,7 +80,24 @@ type FeishuThreadBindingManagerInternal = FeishuThreadBindingManager & {
 const MANAGERS_BY_ACCOUNT_ID = new Map<string, FeishuThreadBindingManagerInternal>();
 const BINDINGS_BY_ACCOUNT_CONVERSATION = new Map<string, FeishuThreadBindingRecord>();
 const BINDINGS_BY_ACCOUNT_NATIVE_THREAD = new Map<string, string>();
-const PERSIST_QUEUE_BY_ACCOUNT = new Map<string, Promise<void>>();
+
+function resolveSharedPersistQueueRegistry(): Map<string, Promise<void>> {
+  // Feishu can be loaded through multiple module graphs in the same process.
+  // Keep the per-account persist queue on globalThis so every graph serializes
+  // disk writes through the same promise chain.
+  const globalRegistry = globalThis as typeof globalThis & {
+    [FEISHU_PERSIST_QUEUE_BY_ACCOUNT_KEY]?: Map<string, Promise<void>>;
+  };
+  const existing = globalRegistry[FEISHU_PERSIST_QUEUE_BY_ACCOUNT_KEY];
+  if (existing) {
+    return existing;
+  }
+  const created = new Map<string, Promise<void>>();
+  globalRegistry[FEISHU_PERSIST_QUEUE_BY_ACCOUNT_KEY] = created;
+  return created;
+}
+
+const PERSIST_QUEUE_BY_ACCOUNT = resolveSharedPersistQueueRegistry();
 
 function normalizeDurationMs(raw: unknown, fallback: number): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) {

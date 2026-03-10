@@ -632,6 +632,115 @@ describe("feishu thread bindings", () => {
     }
   });
 
+  it("shares the persist queue across duplicate Feishu module copies", async () => {
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+    const moduleUrl = new URL("./thread-bindings.ts", import.meta.url).href;
+    const suffix = Date.now().toString(36);
+    const first = await import(/* @vite-ignore */ `${moduleUrl}?copy=${suffix}-a`);
+    const second = await import(/* @vite-ignore */ `${moduleUrl}?copy=${suffix}-b`);
+    try {
+      const firstManager = first.createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+      await getSessionBindingService().bind({
+        targetSessionKey: "agent:codex:acp:stale",
+        targetKind: "session",
+        conversation: {
+          channel: "feishu",
+          accountId: "work",
+          conversationId: "oc_chat_shared_queue:thread:om_root_shared_queue",
+        },
+        placement: "current",
+      });
+      await Promise.all([
+        __testing.flushPersistQueueForTests("work"),
+        first.__testing.flushPersistQueueForTests("work"),
+      ]);
+
+      second.createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      const originalWriteFile = fsPromises.writeFile.bind(fsPromises);
+      let releaseStaleWrite: (() => void) | undefined;
+      let blockedStaleWrite = false;
+      const writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation(async (...args) => {
+        const payload = typeof args[1] === "string" ? args[1] : "";
+        if (!blockedStaleWrite && payload.includes('"targetSessionKey": "agent:codex:acp:stale"')) {
+          blockedStaleWrite = true;
+          await new Promise<void>((resolve) => {
+            releaseStaleWrite = resolve;
+          });
+        }
+        return originalWriteFile(...args);
+      });
+
+      try {
+        firstManager.touchConversation("oc_chat_shared_queue:thread:om_root_shared_queue", 2);
+
+        await vi.waitFor(() => {
+          expect(blockedStaleWrite).toBe(true);
+        });
+
+        await getSessionBindingService().bind({
+          targetSessionKey: "agent:codex:acp:fresh",
+          targetKind: "session",
+          conversation: {
+            channel: "feishu",
+            accountId: "work",
+            conversationId: "oc_chat_shared_queue:thread:om_root_shared_queue",
+          },
+          placement: "current",
+        });
+
+        const unblockStaleWrite = releaseStaleWrite;
+        if (!unblockStaleWrite) {
+          throw new Error("expected stale persist write to be blocked");
+        }
+        unblockStaleWrite();
+        await Promise.all([
+          __testing.flushPersistQueueForTests("work"),
+          first.__testing.flushPersistQueueForTests("work"),
+          second.__testing.flushPersistQueueForTests("work"),
+        ]);
+
+        const bindingsPath = path.join(
+          process.env.OPENCLAW_STATE_DIR,
+          "feishu",
+          "thread-bindings-work.json",
+        );
+        const payload = JSON.parse(await fsPromises.readFile(bindingsPath, "utf-8")) as {
+          bindings: Array<{
+            conversationId: string;
+            targetSessionKey: string;
+          }>;
+        };
+        expect(payload.bindings).toEqual([
+          expect.objectContaining({
+            conversationId: "oc_chat_shared_queue:thread:om_root_shared_queue",
+            targetSessionKey: "agent:codex:acp:fresh",
+          }),
+        ]);
+      } finally {
+        writeSpy.mockRestore();
+      }
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+      first.__testing.resetFeishuThreadBindingsForTests();
+      second.__testing.resetFeishuThreadBindingsForTests();
+    }
+  });
+
   it("preserves queued persisted bindings when a manager stops", async () => {
     const homeDir = await fsMkdtemp();
     const previousHome = process.env.HOME;
