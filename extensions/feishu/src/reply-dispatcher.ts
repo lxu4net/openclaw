@@ -404,6 +404,12 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             return;
           }
 
+          if (info?.kind === "block" && threadReplyMode) {
+            // Thread replies should stay silent until the final payload when
+            // streaming could not be activated for card rendering.
+            return;
+          }
+
           const resolvedText =
             threadReplyMode && !useCard ? mergeStreamingText(bufferedThreadText, text) : text;
           if (threadReplyMode && (!useCard || info?.kind === "final")) {

@@ -606,6 +606,7 @@ export function createFeishuThreadBindingManager(
     [...BINDINGS_BY_ACCOUNT_CONVERSATION.values()].filter((entry) => entry.accountId === accountId);
 
   let sweepTimer: NodeJS.Timeout | null = null;
+  const adapterOwnerToken = Symbol(`feishu-thread-bindings:${accountId}`);
 
   const manager: FeishuThreadBindingManager = {
     accountId,
@@ -737,7 +738,11 @@ export function createFeishuThreadBindingManager(
         clearInterval(sweepTimer);
         sweepTimer = null;
       }
-      unregisterSessionBindingAdapter({ channel: "feishu", accountId });
+      unregisterSessionBindingAdapter({
+        channel: "feishu",
+        accountId,
+        ownerToken: adapterOwnerToken,
+      });
       if (!persist) {
         // Keep persisted bindings resident across manager restarts so queued writes
         // cannot flush an empty snapshot during shutdown.
@@ -750,110 +755,115 @@ export function createFeishuThreadBindingManager(
     },
   };
 
-  registerSessionBindingAdapter({
-    channel: "feishu",
-    accountId,
-    capabilities: {
-      placements: ["current"],
-    },
-    bind: async (input) => {
-      if (input.conversation.channel !== "feishu") {
-        return null;
-      }
-      const conversationId = normalizeConversationId(input.conversation.conversationId);
-      const targetSessionKey = input.targetSessionKey.trim();
-      if (!targetSessionKey) {
-        return null;
-      }
-      if (!conversationId) {
-        return null;
-      }
-      const record = fromSessionBindingInput({
-        accountId,
-        input: {
-          targetSessionKey,
-          targetKind: input.targetKind,
-          conversationId,
-          metadata: input.metadata,
-        },
-      });
-      upsertBindingRecord(record);
-      void queuePersistBindingsToDisk({ accountId, persist: manager.shouldPersistMutations() });
-      return toSessionBindingRecord(record, {
-        idleTimeoutMs,
-        maxAgeMs,
-      });
-    },
-    listBySession: (targetSessionKeyRaw) => {
-      const targetSessionKey = targetSessionKeyRaw.trim();
-      if (!targetSessionKey) {
-        return [];
-      }
-      return manager.listBySessionKey(targetSessionKey).map((entry) =>
-        toSessionBindingRecord(entry, {
+  registerSessionBindingAdapter(
+    {
+      channel: "feishu",
+      accountId,
+      capabilities: {
+        placements: ["current"],
+      },
+      bind: async (input) => {
+        if (input.conversation.channel !== "feishu") {
+          return null;
+        }
+        const conversationId = normalizeConversationId(input.conversation.conversationId);
+        const targetSessionKey = input.targetSessionKey.trim();
+        if (!targetSessionKey) {
+          return null;
+        }
+        if (!conversationId) {
+          return null;
+        }
+        const record = fromSessionBindingInput({
+          accountId,
+          input: {
+            targetSessionKey,
+            targetKind: input.targetKind,
+            conversationId,
+            metadata: input.metadata,
+          },
+        });
+        upsertBindingRecord(record);
+        void queuePersistBindingsToDisk({ accountId, persist: manager.shouldPersistMutations() });
+        return toSessionBindingRecord(record, {
           idleTimeoutMs,
           maxAgeMs,
-        }),
-      );
-    },
-    resolveByConversation: (ref) => {
-      if (ref.channel !== "feishu") {
-        return null;
-      }
-      const conversationId = normalizeConversationId(ref.conversationId);
-      if (!conversationId) {
-        return null;
-      }
-      const record = manager.getByConversationId(conversationId);
-      return record
-        ? toSessionBindingRecord(record, {
-            idleTimeoutMs,
-            maxAgeMs,
-          })
-        : null;
-    },
-    touch: (bindingId, at) => {
-      const conversationId = resolveConversationIdFromBindingId({
-        accountId,
-        bindingId,
-      });
-      if (!conversationId) {
-        return;
-      }
-      manager.touchConversation(conversationId, at);
-    },
-    unbind: async (input) => {
-      if (input.targetSessionKey?.trim()) {
-        const removed = manager.unbindBySessionKey({
-          targetSessionKey: input.targetSessionKey,
         });
-        return removed.map((entry) =>
+      },
+      listBySession: (targetSessionKeyRaw) => {
+        const targetSessionKey = targetSessionKeyRaw.trim();
+        if (!targetSessionKey) {
+          return [];
+        }
+        return manager.listBySessionKey(targetSessionKey).map((entry) =>
           toSessionBindingRecord(entry, {
             idleTimeoutMs,
             maxAgeMs,
           }),
         );
-      }
-      const conversationId = resolveConversationIdFromBindingId({
-        accountId,
-        bindingId: input.bindingId,
-      });
-      if (!conversationId) {
-        return [];
-      }
-      const removed = manager.unbindConversation({
-        conversationId,
-      });
-      return removed
-        ? [
-            toSessionBindingRecord(removed, {
+      },
+      resolveByConversation: (ref) => {
+        if (ref.channel !== "feishu") {
+          return null;
+        }
+        const conversationId = normalizeConversationId(ref.conversationId);
+        if (!conversationId) {
+          return null;
+        }
+        const record = manager.getByConversationId(conversationId);
+        return record
+          ? toSessionBindingRecord(record, {
+              idleTimeoutMs,
+              maxAgeMs,
+            })
+          : null;
+      },
+      touch: (bindingId, at) => {
+        const conversationId = resolveConversationIdFromBindingId({
+          accountId,
+          bindingId,
+        });
+        if (!conversationId) {
+          return;
+        }
+        manager.touchConversation(conversationId, at);
+      },
+      unbind: async (input) => {
+        if (input.targetSessionKey?.trim()) {
+          const removed = manager.unbindBySessionKey({
+            targetSessionKey: input.targetSessionKey,
+          });
+          return removed.map((entry) =>
+            toSessionBindingRecord(entry, {
               idleTimeoutMs,
               maxAgeMs,
             }),
-          ]
-        : [];
+          );
+        }
+        const conversationId = resolveConversationIdFromBindingId({
+          accountId,
+          bindingId: input.bindingId,
+        });
+        if (!conversationId) {
+          return [];
+        }
+        const removed = manager.unbindConversation({
+          conversationId,
+        });
+        return removed
+          ? [
+              toSessionBindingRecord(removed, {
+                idleTimeoutMs,
+                maxAgeMs,
+              }),
+            ]
+          : [];
+      },
     },
-  });
+    {
+      ownerToken: adapterOwnerToken,
+    },
+  );
 
   const sweeperEnabled = params.enableSweeper !== false;
   if (sweeperEnabled) {

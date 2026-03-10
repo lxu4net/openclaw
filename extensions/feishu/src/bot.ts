@@ -16,7 +16,10 @@ import {
 } from "openclaw/plugin-sdk/feishu";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
-import { buildFeishuThreadConversationId } from "./conversation-id.js";
+import {
+  buildFeishuThreadConversationId,
+  parseFeishuConversationTarget,
+} from "./conversation-id.js";
 import { tryRecordMessage, tryRecordMessagePersistent } from "./dedup.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
@@ -1425,11 +1428,15 @@ export async function handleFeishuMessage(params: {
       agentAccountId: string,
       wasMentioned: boolean,
     ) => {
+      const canonicalThreadRootMessageId =
+        threadRootMessageId ??
+        parseFeishuConversationTarget(threadBinding?.conversation.conversationId ?? "")
+          .rootMessageId;
       const nativeConversationId =
-        isGroup && (threadRootMessageId || threadBinding?.conversation.conversationId)
+        isGroup && (canonicalThreadRootMessageId || threadBinding?.conversation.conversationId)
           ? resolveFeishuNativeConversationId({
               chatId: ctx.chatId,
-              threadRootMessageId,
+              threadRootMessageId: canonicalThreadRootMessageId,
               threadBindingConversationId: threadBinding?.conversation.conversationId,
             })
           : undefined;
@@ -1438,8 +1445,8 @@ export async function handleFeishuMessage(params: {
         BodyForAgent: messageBody,
         InboundHistory: inboundHistory,
         ReplyToId: ctx.parentId,
-        ...(threadRootMessageId ? { MessageThreadId: threadRootMessageId } : {}),
-        ...(threadRootMessageId ? { RootMessageId: threadRootMessageId } : {}),
+        ...(canonicalThreadRootMessageId ? { MessageThreadId: canonicalThreadRootMessageId } : {}),
+        ...(canonicalThreadRootMessageId ? { RootMessageId: canonicalThreadRootMessageId } : {}),
         ...(nativeConversationId ? { NativeChannelId: nativeConversationId } : {}),
         ...(nativeConversationId ? { ThreadParentId: ctx.chatId } : {}),
         RawBody: ctx.content,

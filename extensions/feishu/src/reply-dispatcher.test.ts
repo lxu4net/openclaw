@@ -12,6 +12,7 @@ const addTypingIndicatorMock = vi.hoisted(() => vi.fn(async () => ({ messageId: 
 const removeTypingIndicatorMock = vi.hoisted(() => vi.fn(async () => {}));
 const recordFeishuNativeThreadBindingMock = vi.hoisted(() => vi.fn());
 const streamingInstances = vi.hoisted(() => [] as any[]);
+const nextStreamingStartError = vi.hoisted(() => ({ current: null as Error | null }));
 
 vi.mock("./accounts.js", () => ({ resolveFeishuAccount: resolveFeishuAccountMock }));
 vi.mock("./runtime.js", () => ({ getFeishuRuntime: getFeishuRuntimeMock }));
@@ -51,6 +52,11 @@ vi.mock("./streaming-card.js", () => ({
     active = false;
     nativeThreadId = "omt_streaming_1";
     start = vi.fn(async () => {
+      if (nextStreamingStartError.current) {
+        const error = nextStreamingStartError.current;
+        nextStreamingStartError.current = null;
+        throw error;
+      }
       this.active = true;
     });
     update = vi.fn(async () => {});
@@ -73,6 +79,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     vi.clearAllMocks();
     const FEISHU_APP_SECRET = "app_secret";
     streamingInstances.length = 0;
+    nextStreamingStartError.current = null;
     sendMediaFeishuMock.mockResolvedValue(undefined);
 
     resolveFeishuAccountMock.mockReturnValue({
@@ -613,6 +620,35 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       rootId: "om_root_topic",
     });
     expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+  });
+
+  it("drops thread card block chunks when streaming startup fails", async () => {
+    createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatId: "oc_chat",
+      replyToMessageId: "om_msg",
+      replyInThread: false,
+      threadReply: true,
+      rootId: "om_root_topic",
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    nextStreamingStartError.current = new Error("card start failed");
+
+    await options.deliver({ text: "```ts\npartial chunk\n```" }, { kind: "block" });
+    await options.deliver({ text: "```ts\nfinal chunk\n```" }, { kind: "final" });
+
+    expect(sendMarkdownCardFeishuMock).toHaveBeenCalledTimes(1);
+    expect(sendMarkdownCardFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "```ts\nfinal chunk\n```",
+        replyToMessageId: "om_msg",
+        replyInThread: true,
+      }),
+    );
     expect(sendMessageFeishuMock).not.toHaveBeenCalled();
   });
 

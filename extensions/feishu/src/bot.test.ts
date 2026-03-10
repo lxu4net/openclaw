@@ -11,7 +11,10 @@ import {
   toMessageResourceType,
 } from "./bot.js";
 import { setFeishuRuntime } from "./runtime.js";
-import { stopFeishuThreadBindingManager } from "./thread-bindings.js";
+import {
+  ensureFeishuThreadBindingManagerForAccount,
+  stopFeishuThreadBindingManager,
+} from "./thread-bindings.js";
 
 const {
   mockCreateFeishuReplyDispatcher,
@@ -1748,6 +1751,69 @@ describe("handleFeishuMessage command authorization", () => {
         MessageThreadId: "om_group_topic_root",
         RootMessageId: "om_group_topic_root",
         NativeChannelId: "oc-group:thread:om_group_topic_root",
+      }),
+    );
+  });
+
+  it("preserves topic routing when a rootless follow-up is recovered by native thread id", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          enabled: true,
+          groups: {
+            "oc-bound-group": {
+              requireMention: false,
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+
+    ensureFeishuThreadBindingManagerForAccount({
+      cfg,
+      accountId: "default",
+      persist: false,
+      enableSweeper: false,
+    });
+    const { getSessionBindingService } = await import("openclaw/plugin-sdk/feishu");
+    await getSessionBindingService().bind({
+      targetSessionKey: "agent:main:acp:bound-rootless",
+      targetKind: "session",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc-bound-group:thread:om_bound_root",
+      },
+      placement: "current",
+      metadata: {
+        nativeThreadId: "omt_bound_native",
+      },
+    });
+
+    const event: FeishuMessageEvent = {
+      sender: { sender_id: { open_id: "ou-bound-thread-user" } },
+      message: {
+        message_id: "msg-bound-thread-followup",
+        parent_id: "om_prev_in_thread",
+        chat_id: "oc-bound-group",
+        chat_type: "group",
+        thread_id: "omt_bound_native",
+        message_type: "text",
+        content: JSON.stringify({ text: "rootless topic follow-up" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        SessionKey: "agent:main:acp:bound-rootless",
+        MessageThreadId: "om_bound_root",
+        RootMessageId: "om_bound_root",
+        NativeChannelId: "oc-bound-group:thread:om_bound_root",
+        OriginatingTo: "chat:oc-bound-group",
       }),
     );
   });
