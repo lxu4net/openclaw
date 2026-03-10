@@ -66,15 +66,19 @@ function resolveFeishuConversationTarget(params: {
   threadId?: string | number | null;
 }): { to: string; threadId?: string | number | null } {
   const parsed = parseFeishuConversationTarget(params.to);
-  if (!parsed.chatId || !parsed.rootMessageId || params.threadId != null) {
+  const explicitThreadId =
+    params.threadId != null ? String(params.threadId).trim() || undefined : undefined;
+  if (parsed.chatId && parsed.rootMessageId) {
+    // Canonical thread conversation ids are Feishu routing aliases. The
+    // message APIs still require the raw chat_id as receive_id.
     return {
-      to: params.to,
-      threadId: params.threadId,
+      to: `chat:${parsed.chatId}`,
+      threadId: explicitThreadId ?? parsed.rootMessageId,
     };
   }
   return {
-    to: `chat:${parsed.chatId}`,
-    threadId: parsed.rootMessageId,
+    to: params.to,
+    threadId: explicitThreadId,
   };
 }
 

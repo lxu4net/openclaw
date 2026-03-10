@@ -245,6 +245,37 @@ describe("feishuOutbound.sendText local-image auto-convert", () => {
       nativeThreadId: "omt_thread_explicit",
     });
   });
+
+  it("normalizes canonical thread targets before explicit threadId sends", async () => {
+    sendMessageFeishuMock.mockResolvedValue({
+      messageId: "text_msg",
+      nativeThreadId: "omt_thread_explicit",
+    });
+
+    await sendText({
+      cfg: {} as any,
+      to: "chat:oc_thread_chat:thread:om_root_3",
+      threadId: "om_root_explicit",
+      text: "hello",
+      accountId: "main",
+    } as any);
+
+    expect(sendMessageFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "chat:oc_thread_chat",
+        text: "hello",
+        replyToMessageId: "om_root_explicit",
+        replyInThread: true,
+        accountId: "main",
+      }),
+    );
+    expect(recordFeishuNativeThreadBindingMock).toHaveBeenCalledWith({
+      accountId: "main",
+      chatId: "oc_thread_chat",
+      rootMessageId: "om_root_explicit",
+      nativeThreadId: "omt_thread_explicit",
+    });
+  });
 });
 
 describe("feishuOutbound.sendText replyToId forwarding", () => {
@@ -449,6 +480,38 @@ describe("feishuOutbound.sendMedia renderMode", () => {
       chatId: "oc_thread_chat",
       rootMessageId: "om_root_media",
       nativeThreadId: "omt_thread_media",
+    });
+  });
+
+  it("normalizes canonical thread targets before explicit threadId media sends", async () => {
+    sendMediaFeishuMock.mockResolvedValue({
+      messageId: "media_msg",
+      nativeThreadId: "omt_thread_media_explicit",
+    });
+
+    await feishuOutbound.sendMedia?.({
+      cfg: {} as any,
+      to: "chat:oc_thread_chat:thread:om_root_media_old",
+      text: "",
+      mediaUrl: "https://example.com/image.png",
+      threadId: "om_root_media_explicit",
+      accountId: "main",
+    });
+
+    expect(sendMediaFeishuMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "chat:oc_thread_chat",
+        mediaUrl: "https://example.com/image.png",
+        replyToMessageId: "om_root_media_explicit",
+        replyInThread: true,
+        accountId: "main",
+      }),
+    );
+    expect(recordFeishuNativeThreadBindingMock).toHaveBeenCalledWith({
+      accountId: "main",
+      chatId: "oc_thread_chat",
+      rootMessageId: "om_root_media_explicit",
+      nativeThreadId: "omt_thread_media_explicit",
     });
   });
 });
