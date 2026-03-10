@@ -50,13 +50,10 @@ vi.mock("./streaming-card.js", () => ({
   },
   FeishuStreamingSession: class {
     active = false;
-    nativeThreadId = "omt_streaming_1";
     start = vi.fn(async () => {
-      if (nextStreamingStartError.current) {
-        const error = nextStreamingStartError.current;
-        nextStreamingStartError.current = null;
-        throw error;
-      }
+      const error = nextStreamingStartError.current;
+      nextStreamingStartError.current = null;
+      if (error) throw error;
       this.active = true;
     });
     update = vi.fn(async () => {});
@@ -64,14 +61,13 @@ vi.mock("./streaming-card.js", () => ({
       this.active = false;
     });
     isActive = vi.fn(() => this.active);
-    getNativeThreadId = vi.fn(() => this.nativeThreadId);
+    getNativeThreadId = vi.fn(() => "omt_streaming_1");
 
     constructor() {
       streamingInstances.push(this);
     }
   },
 }));
-
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 
 describe("createFeishuReplyDispatcher streaming behavior", () => {
