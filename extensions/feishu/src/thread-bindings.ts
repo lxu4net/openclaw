@@ -184,26 +184,88 @@ function clearBindingsForAccount(accountId: string): void {
   }
 }
 
-function mergeBindingsFromDisk(accountId: string): number {
+function hasPendingPersistQueue(accountId: string): boolean {
+  return PERSIST_QUEUE_BY_ACCOUNT.has(accountId);
+}
+
+function areBindingRecordsEqual(
+  left: FeishuThreadBindingRecord,
+  right: FeishuThreadBindingRecord,
+): boolean {
+  return (
+    left.accountId === right.accountId &&
+    left.conversationId === right.conversationId &&
+    left.nativeThreadId === right.nativeThreadId &&
+    left.targetKind === right.targetKind &&
+    left.targetSessionKey === right.targetSessionKey &&
+    left.agentId === right.agentId &&
+    left.label === right.label &&
+    left.boundBy === right.boundBy &&
+    left.boundAt === right.boundAt &&
+    left.lastActivityAt === right.lastActivityAt &&
+    left.idleTimeoutMs === right.idleTimeoutMs &&
+    left.maxAgeMs === right.maxAgeMs
+  );
+}
+
+function mergeBindingsFromDisk(
+  accountId: string,
+  options: {
+    authoritative?: boolean;
+  } = {},
+): number {
   let merged = 0;
+  const loadedBindings = new Map<string, FeishuThreadBindingRecord>();
   for (const entry of loadBindingsFromDisk(accountId)) {
-    const key = resolveBindingKey({
+    const record: FeishuThreadBindingRecord = {
+      ...entry,
       accountId,
-      conversationId: entry.conversationId,
-    });
+    };
+    loadedBindings.set(
+      resolveBindingKey({
+        accountId,
+        conversationId: record.conversationId,
+      }),
+      record,
+    );
+  }
+
+  if (options.authoritative) {
+    for (const [key, existing] of [...BINDINGS_BY_ACCOUNT_CONVERSATION.entries()]) {
+      if (existing.accountId !== accountId) {
+        continue;
+      }
+      const loaded = loadedBindings.get(key);
+      if (!loaded) {
+        removeBindingRecord(existing);
+        merged += 1;
+        continue;
+      }
+      if (!areBindingRecordsEqual(existing, loaded)) {
+        upsertBindingRecord(loaded);
+        merged += 1;
+      }
+      loadedBindings.delete(key);
+    }
+
+    for (const loaded of loadedBindings.values()) {
+      upsertBindingRecord(loaded);
+      merged += 1;
+    }
+    return merged;
+  }
+
+  for (const [key, loaded] of loadedBindings.entries()) {
     const existing = BINDINGS_BY_ACCOUNT_CONVERSATION.get(key);
     if (!existing) {
-      upsertBindingRecord({
-        ...entry,
-        accountId,
-      });
+      upsertBindingRecord(loaded);
       merged += 1;
       continue;
     }
-    if (!existing.nativeThreadId && entry.nativeThreadId) {
+    if (!existing.nativeThreadId && loaded.nativeThreadId) {
       upsertBindingRecord({
         ...existing,
-        nativeThreadId: entry.nativeThreadId,
+        nativeThreadId: loaded.nativeThreadId,
       });
       merged += 1;
     }
@@ -536,7 +598,9 @@ export function createFeishuThreadBindingManager(
   );
   const maxAgeMs = normalizeDurationMs(params.maxAgeMs, DEFAULT_THREAD_BINDING_MAX_AGE_MS);
 
-  mergeBindingsFromDisk(accountId);
+  mergeBindingsFromDisk(accountId, {
+    authoritative: persist && !hasPendingPersistQueue(accountId),
+  });
 
   const listBindingsForAccount = () =>
     [...BINDINGS_BY_ACCOUNT_CONVERSATION.values()].filter((entry) => entry.accountId === accountId);
@@ -871,7 +935,11 @@ export function rehydrateFeishuThreadBindingManagerForAccount(params: {
   if (!manager) {
     return null;
   }
-  mergeBindingsFromDisk(normalizeAccountId(params.accountId));
+  const accountId = normalizeAccountId(params.accountId);
+  mergeBindingsFromDisk(accountId, {
+    // When a local write is still queued, disk can lag behind the live manager.
+    authoritative: manager.shouldPersistMutations() && !hasPendingPersistQueue(accountId),
+  });
   return manager;
 }
 

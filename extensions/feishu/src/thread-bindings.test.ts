@@ -8,6 +8,7 @@ import {
   __testing,
   createFeishuThreadBindingManager,
   ensureFeishuThreadBindingManagerForAccount,
+  rehydrateFeishuThreadBindingManagerForAccount,
   recordFeishuNativeThreadBinding,
   resolveFeishuThreadBindingByNativeThread,
   stopFeishuThreadBindingManager,
@@ -205,6 +206,213 @@ describe("feishu thread bindings", () => {
     }
   });
 
+  it("rehydrates persisted Feishu rebinds over stale in-memory state", async () => {
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+    try {
+      const bindingsPath = path.join(
+        process.env.OPENCLAW_STATE_DIR,
+        "feishu",
+        "thread-bindings-work.json",
+      );
+      createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      await getSessionBindingService().bind({
+        targetSessionKey: "agent:codex:acp:stale",
+        targetKind: "session",
+        conversation: {
+          channel: "feishu",
+          accountId: "work",
+          conversationId: "oc_chat_rebind:thread:om_root_rebind",
+        },
+        placement: "current",
+      });
+      await __testing.flushPersistQueueForTests("work");
+
+      await fsPromises.writeFile(
+        bindingsPath,
+        JSON.stringify(
+          {
+            version: 1,
+            bindings: [
+              {
+                accountId: "work",
+                conversationId: "oc_chat_rebind:thread:om_root_rebind",
+                targetKind: "acp",
+                targetSessionKey: "agent:codex:acp:fresh",
+                boundAt: 2,
+                lastActivityAt: 3,
+                nativeThreadId: "omt_thread_rebind",
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+
+      rehydrateFeishuThreadBindingManagerForAccount({
+        cfg: createFeishuBindingsConfig(),
+        accountId: "work",
+      });
+
+      expect(
+        getSessionBindingService().resolveByConversation({
+          channel: "feishu",
+          accountId: "work",
+          conversationId: "oc_chat_rebind:thread:om_root_rebind",
+        }),
+      ).toMatchObject({
+        targetSessionKey: "agent:codex:acp:fresh",
+        metadata: {
+          nativeThreadId: "omt_thread_rebind",
+        },
+      });
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+    }
+  });
+
+  it("rehydrates persisted unbinds over stale in-memory state", async () => {
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+    try {
+      const bindingsPath = path.join(
+        process.env.OPENCLAW_STATE_DIR,
+        "feishu",
+        "thread-bindings-work.json",
+      );
+      createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      await getSessionBindingService().bind({
+        targetSessionKey: "agent:codex:acp:stale",
+        targetKind: "session",
+        conversation: {
+          channel: "feishu",
+          accountId: "work",
+          conversationId: "oc_chat_unbind:thread:om_root_unbind",
+        },
+        placement: "current",
+        metadata: {
+          nativeThreadId: "omt_thread_unbind",
+        },
+      });
+      await __testing.flushPersistQueueForTests("work");
+
+      await fsPromises.writeFile(
+        bindingsPath,
+        JSON.stringify({ version: 1, bindings: [] }, null, 2),
+      );
+
+      rehydrateFeishuThreadBindingManagerForAccount({
+        cfg: createFeishuBindingsConfig(),
+        accountId: "work",
+      });
+
+      expect(
+        getSessionBindingService().resolveByConversation({
+          channel: "feishu",
+          accountId: "work",
+          conversationId: "oc_chat_unbind:thread:om_root_unbind",
+        }),
+      ).toBeNull();
+      expect(
+        resolveFeishuThreadBindingByNativeThread({
+          accountId: "work",
+          chatId: "oc_chat_unbind",
+          nativeThreadId: "omt_thread_unbind",
+        }),
+      ).toBeNull();
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+    }
+  });
+
+  it("does not let disk rehydration roll back bindings with a pending local persist", async () => {
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+    try {
+      createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      const originalWriteFile = fsPromises.writeFile.bind(fsPromises);
+      let releaseWrite: (() => void) | undefined;
+      const writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation(async (...args) => {
+        await new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        });
+        return originalWriteFile(...args);
+      });
+
+      try {
+        await getSessionBindingService().bind({
+          targetSessionKey: "agent:codex:acp:pending",
+          targetKind: "session",
+          conversation: {
+            channel: "feishu",
+            accountId: "work",
+            conversationId: "oc_chat_pending:thread:om_root_pending",
+          },
+          placement: "current",
+        });
+
+        await vi.waitFor(() => {
+          expect(writeSpy).toHaveBeenCalledTimes(1);
+        });
+
+        rehydrateFeishuThreadBindingManagerForAccount({
+          cfg: createFeishuBindingsConfig(),
+          accountId: "work",
+        });
+
+        expect(
+          getSessionBindingService().resolveByConversation({
+            channel: "feishu",
+            accountId: "work",
+            conversationId: "oc_chat_pending:thread:om_root_pending",
+          })?.targetSessionKey,
+        ).toBe("agent:codex:acp:pending");
+
+        const unblockWrite = releaseWrite;
+        if (!unblockWrite) {
+          throw new Error("expected pending persist write to be blocked");
+        }
+        unblockWrite();
+        await __testing.flushPersistQueueForTests("work");
+      } finally {
+        writeSpy.mockRestore();
+      }
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+    }
+  });
+
   it("serializes persisted binding writes per account", async () => {
     const homeDir = await fsMkdtemp();
     const previousHome = process.env.HOME;
@@ -395,6 +603,20 @@ describe("feishu thread bindings", () => {
     });
   });
 });
+
+function createFeishuBindingsConfig(): ClawdbotConfig {
+  return {
+    session: {
+      mainKey: "main",
+      scope: "per-sender",
+    },
+    channels: {
+      feishu: {
+        enabled: true,
+      },
+    },
+  };
+}
 
 async function fsMkdtemp(): Promise<string> {
   const fs = await import("node:fs/promises");
