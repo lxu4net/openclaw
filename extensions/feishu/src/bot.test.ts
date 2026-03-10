@@ -10,7 +10,9 @@ import {
   buildFeishuAgentBody,
   clearFeishuThreadBindingRehydrationStateForTest,
   handleFeishuMessage,
+  recordFeishuThreadBindingRehydrationForTest,
   resolveBroadcastAgents,
+  shouldRehydrateFeishuThreadBindingsForTest,
   toMessageResourceType,
 } from "./bot.js";
 import { setFeishuRuntime } from "./runtime.js";
@@ -2033,6 +2035,19 @@ describe("handleFeishuMessage command authorization", () => {
       restoreEnvVar("OPENCLAW_STATE_DIR", previousStateDir);
       __testing.resetFeishuThreadBindingsForTests();
     }
+  });
+
+  it("only starts rehydrate cooldown after a complete refresh", () => {
+    clearFeishuThreadBindingRehydrationStateForTest();
+
+    expect(shouldRehydrateFeishuThreadBindingsForTest("default", 10_000)).toBe(true);
+
+    recordFeishuThreadBindingRehydrationForTest("default", false, 10_000);
+    expect(shouldRehydrateFeishuThreadBindingsForTest("default", 10_001)).toBe(true);
+
+    recordFeishuThreadBindingRehydrationForTest("default", true, 10_000);
+    expect(shouldRehydrateFeishuThreadBindingsForTest("default", 10_001)).toBe(false);
+    expect(shouldRehydrateFeishuThreadBindingsForTest("default", 15_001)).toBe(true);
   });
 
   it("does not dispatch twice for the same image message_id (concurrent dedupe)", async () => {

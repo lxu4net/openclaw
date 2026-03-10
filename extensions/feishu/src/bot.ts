@@ -62,12 +62,15 @@ const FEISHU_SCOPE_CORRECTIONS: Record<string, string> = {
 };
 
 function shouldRehydrateFeishuThreadBindings(accountId: string, now = Date.now()): boolean {
-  const lastAttemptAt = LAST_THREAD_BINDING_REHYDRATED_AT.get(accountId) ?? 0;
-  if (now - lastAttemptAt < THREAD_BINDING_REHYDRATION_COOLDOWN_MS) {
+  const lastCompleteRefreshAt = LAST_THREAD_BINDING_REHYDRATED_AT.get(accountId) ?? 0;
+  if (now - lastCompleteRefreshAt < THREAD_BINDING_REHYDRATION_COOLDOWN_MS) {
     return false;
   }
-  LAST_THREAD_BINDING_REHYDRATED_AT.set(accountId, now);
   return true;
+}
+
+function markFeishuThreadBindingsRehydrated(accountId: string, now = Date.now()): void {
+  LAST_THREAD_BINDING_REHYDRATED_AT.set(accountId, now);
 }
 
 function resolveFeishuThreadRootMessageId(ctx: FeishuMessageContext): string | undefined {
@@ -1242,11 +1245,15 @@ export async function handleFeishuMessage(params: {
       if (shouldRehydrateFeishuThreadBindings(account.accountId)) {
         // ACP thread bindings can be rebound by a different module instance than
         // the Feishu monitor. Refresh from disk before trusting the local match,
-        // but keep the cooldown so threaded traffic does not reload on every turn.
-        rehydrateFeishuThreadBindingManagerForAccount({
+        // but only start the cooldown after a complete refresh so pending disk
+        // writes can be picked up immediately on the next inbound turn.
+        const rehydrateResult = rehydrateFeishuThreadBindingManagerForAccount({
           cfg,
           accountId: account.accountId,
         });
+        if (rehydrateResult.cooldownEligible) {
+          markFeishuThreadBindingsRehydrated(account.accountId);
+        }
         // Rehydration already handles pending-write safety. If the authoritative
         // disk state no longer contains this binding, drop the stale local match.
         threadBinding = resolveThreadBinding();
@@ -1662,4 +1669,22 @@ export async function handleFeishuMessage(params: {
 
 export function clearFeishuThreadBindingRehydrationStateForTest(): void {
   LAST_THREAD_BINDING_REHYDRATED_AT.clear();
+}
+
+export function shouldRehydrateFeishuThreadBindingsForTest(
+  accountId: string,
+  now = Date.now(),
+): boolean {
+  return shouldRehydrateFeishuThreadBindings(accountId, now);
+}
+
+export function recordFeishuThreadBindingRehydrationForTest(
+  accountId: string,
+  cooldownEligible: boolean,
+  now = Date.now(),
+): void {
+  if (!cooldownEligible) {
+    return;
+  }
+  markFeishuThreadBindingsRehydrated(accountId, now);
 }

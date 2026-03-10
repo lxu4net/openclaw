@@ -378,6 +378,72 @@ describe("feishu thread bindings", () => {
     }
   });
 
+  it("reports pending-write rehydrates as ineligible for cooldown", async () => {
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+    try {
+      createFeishuThreadBindingManager({
+        accountId: "work",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      const originalWriteFile = fsPromises.writeFile.bind(fsPromises);
+      let releaseWrite: (() => void) | undefined;
+      const writeSpy = vi.spyOn(fsPromises, "writeFile").mockImplementation(async (...args) => {
+        await new Promise<void>((resolve) => {
+          releaseWrite = resolve;
+        });
+        return originalWriteFile(...args);
+      });
+
+      try {
+        await getSessionBindingService().bind({
+          targetSessionKey: "agent:codex:acp:pending-cooldown",
+          targetKind: "session",
+          conversation: {
+            channel: "feishu",
+            accountId: "work",
+            conversationId: "oc_chat_pending_cooldown:thread:om_root_pending_cooldown",
+          },
+          placement: "current",
+        });
+
+        await vi.waitFor(() => {
+          expect(writeSpy).toHaveBeenCalledTimes(1);
+        });
+
+        const pendingResult = rehydrateFeishuThreadBindingManagerForAccount({
+          cfg: createFeishuBindingsConfig(),
+          accountId: "work",
+        });
+        expect(pendingResult.cooldownEligible).toBe(false);
+
+        const unblockWrite = releaseWrite;
+        if (!unblockWrite) {
+          throw new Error("expected pending persist write to be blocked");
+        }
+        unblockWrite();
+        await __testing.flushPersistQueueForTests("work");
+
+        const flushedResult = rehydrateFeishuThreadBindingManagerForAccount({
+          cfg: createFeishuBindingsConfig(),
+          accountId: "work",
+        });
+        expect(flushedResult.cooldownEligible).toBe(true);
+      } finally {
+        writeSpy.mockRestore();
+      }
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+    }
+  });
+
   it("does not resurrect a just-unbound binding during pending-write rehydration", async () => {
     const homeDir = await fsMkdtemp();
     const previousHome = process.env.HOME;

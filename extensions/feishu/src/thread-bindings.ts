@@ -64,6 +64,11 @@ type FeishuThreadBindingManagerInternal = FeishuThreadBindingManager & {
   ensureAdapterRegistered: () => void;
 };
 
+export type FeishuThreadBindingRehydrateResult = {
+  manager: FeishuThreadBindingManager | null;
+  cooldownEligible: boolean;
+};
+
 const MANAGERS_BY_ACCOUNT_ID = new Map<string, FeishuThreadBindingManagerInternal>();
 const BINDINGS_BY_ACCOUNT_CONVERSATION = new Map<string, FeishuThreadBindingRecord>();
 
@@ -839,10 +844,13 @@ export function rehydrateFeishuThreadBindingManagerForAccount(params: {
   accountId?: string;
   persist?: boolean;
   enableSweeper?: boolean;
-}): FeishuThreadBindingManager | null {
+}): FeishuThreadBindingRehydrateResult {
   const manager = ensureFeishuThreadBindingManagerForAccount(params);
   if (!manager) {
-    return null;
+    return {
+      manager: null,
+      cooldownEligible: false,
+    };
   }
   const accountId = normalizeAccountId(params.accountId);
   const hasPendingWrites = hasPendingPersistQueue(accountId);
@@ -851,7 +859,10 @@ export function rehydrateFeishuThreadBindingManagerForAccount(params: {
     authoritative: manager.shouldPersistMutations() && !hasPendingWrites,
     includeMissingRecords: !hasPendingWrites,
   });
-  return manager;
+  return {
+    manager,
+    cooldownEligible: !hasPendingWrites,
+  };
 }
 
 export function stopFeishuThreadBindingManager(accountId?: string): void {
