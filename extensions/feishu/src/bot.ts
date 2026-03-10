@@ -1256,15 +1256,18 @@ export async function handleFeishuMessage(params: {
             })
           : null);
       threadBinding = resolveThreadBinding();
-      if (!threadBinding && shouldRehydrateFeishuThreadBindings(account.accountId)) {
-        // ACP thread binding can be created by a different module instance than the
-        // Feishu monitor. Merge any persisted bindings into the local manager
-        // without dropping live in-memory state that may not be flushed yet.
+      if (shouldRehydrateFeishuThreadBindings(account.accountId)) {
+        // ACP thread bindings can be rebound by a different module instance than
+        // the Feishu monitor. Refresh from disk before trusting the local match,
+        // but keep the cooldown so threaded traffic does not reload on every turn.
         rehydrateFeishuThreadBindingManagerForAccount({
           cfg,
           accountId: account.accountId,
         });
-        threadBinding = resolveThreadBinding();
+        const rehydratedThreadBinding = resolveThreadBinding();
+        if (rehydratedThreadBinding || !threadBinding) {
+          threadBinding = rehydratedThreadBinding;
+        }
       }
       const boundSessionKey = threadBinding?.targetSessionKey?.trim();
       if (threadBinding && boundSessionKey) {

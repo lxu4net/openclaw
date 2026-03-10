@@ -1,3 +1,6 @@
+import fsPromises from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk/feishu";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginRuntimeMock } from "../../test-utils/plugin-runtime-mock.js";
@@ -12,6 +15,7 @@ import {
 } from "./bot.js";
 import { setFeishuRuntime } from "./runtime.js";
 import {
+  __testing,
   ensureFeishuThreadBindingManagerForAccount,
   stopFeishuThreadBindingManager,
 } from "./thread-bindings.js";
@@ -80,6 +84,10 @@ async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessa
     event: params.event,
     runtime: createRuntimeEnv(),
   });
+}
+
+async function fsMkdtemp(): Promise<string> {
+  return fsPromises.mkdtemp(path.join(os.tmpdir(), "openclaw-feishu-bot-"));
 }
 
 describe("buildFeishuAgentBody", () => {
@@ -1816,6 +1824,110 @@ describe("handleFeishuMessage command authorization", () => {
         OriginatingTo: "chat:oc-bound-group",
       }),
     );
+  });
+
+  it("rehydrates persisted Feishu rebinds before trusting a stale local binding", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+
+    const homeDir = await fsMkdtemp();
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.HOME = homeDir;
+    process.env.OPENCLAW_STATE_DIR = path.join(homeDir, ".openclaw");
+
+    try {
+      const cfg: ClawdbotConfig = {
+        channels: {
+          feishu: {
+            enabled: true,
+            groups: {
+              "oc-rebind-group": {
+                requireMention: false,
+              },
+            },
+          },
+        },
+      } as ClawdbotConfig;
+
+      ensureFeishuThreadBindingManagerForAccount({
+        cfg,
+        accountId: "default",
+        persist: true,
+        enableSweeper: false,
+      });
+
+      const bindingsPath = path.join(
+        process.env.OPENCLAW_STATE_DIR,
+        "feishu",
+        "thread-bindings-default.json",
+      );
+      const { getSessionBindingService } = await import("openclaw/plugin-sdk/feishu");
+
+      await getSessionBindingService().bind({
+        targetSessionKey: "agent:main:acp:stale-topic",
+        targetKind: "session",
+        conversation: {
+          channel: "feishu",
+          accountId: "default",
+          conversationId: "oc-rebind-group:thread:om_rebind_root",
+        },
+        placement: "current",
+        metadata: {
+          nativeThreadId: "omt_rebind_native",
+        },
+      });
+      await __testing.flushPersistQueueForTests("default");
+
+      await fsPromises.writeFile(
+        bindingsPath,
+        JSON.stringify(
+          {
+            version: 1,
+            bindings: [
+              {
+                accountId: "default",
+                conversationId: "oc-rebind-group:thread:om_rebind_root",
+                targetKind: "acp",
+                targetSessionKey: "agent:main:acp:fresh-topic",
+                boundAt: 2,
+                lastActivityAt: 3,
+                nativeThreadId: "omt_rebind_native",
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+
+      const event: FeishuMessageEvent = {
+        sender: { sender_id: { open_id: "ou-topic-rebind-user" } },
+        message: {
+          message_id: "msg-topic-rebind-followup",
+          root_id: "om_rebind_root",
+          parent_id: "om_prev_rebind",
+          chat_id: "oc-rebind-group",
+          chat_type: "group",
+          thread_id: "omt_rebind_native",
+          message_type: "text",
+          content: JSON.stringify({ text: "use the persisted target" }),
+        },
+      };
+
+      await dispatchMessage({ cfg, event });
+
+      expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+        expect.objectContaining({
+          SessionKey: "agent:main:acp:fresh-topic",
+          MessageThreadId: "om_rebind_root",
+          NativeChannelId: "oc-rebind-group:thread:om_rebind_root",
+        }),
+      );
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      __testing.resetFeishuThreadBindingsForTests();
+    }
   });
 
   it("does not dispatch twice for the same image message_id (concurrent dedupe)", async () => {
